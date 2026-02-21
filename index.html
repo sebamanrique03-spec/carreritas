@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Ultra Road Race X</title>
+<style>
+body{margin:0;background:#111;color:white;font-family:sans-serif;text-align:center;overflow:hidden}
+canvas{display:none;background:#1a1a1a;margin:auto}
+#menu,#result,#countdown{
+position:absolute;top:0;left:0;width:100%;height:100%;
+display:flex;flex-direction:column;justify-content:center;align-items:center;gap:10px
+}
+button,select{padding:10px 20px;font-size:16px}
+#controls{
+position:absolute;bottom:10px;width:100%;
+display:none;justify-content:center;gap:20px
+}
+.ctrl{width:70px;height:70px;border-radius:50%;font-size:25px;border:none}
+#ui{position:absolute;top:10px;width:100%;display:none}
+.bar{width:200px;height:15px;background:#333;margin:auto;border-radius:10px;overflow:hidden}
+.fill{height:100%;background:lime;width:100%}
+#countdown{font-size:70px;font-weight:bold;display:none}
+</style>
+</head>
+<body>
+
+<div id="menu">
+<h1>ULTRA ROAD RACE X</h1>
+
+<select id="trackSelect">
+<option value="zigzag">ZigZag</option>
+<option value="oval">Oval</option>
+<option value="wave">Wave</option>
+<option value="diamond">Diamond</option>
+</select>
+
+<h3>Skins</h3>
+<div id="skinList"></div>
+<div>💰 Dinero: <span id="moneyUI">0</span></div>
+<div>🏆 Ganadas: <span id="winsUI">0</span></div>
+<div>💀 Perdidas: <span id="lossUI">0</span></div>
+
+<button onclick="initGame()">START</button>
+</div>
+
+<div id="countdown"></div>
+
+<div id="result" style="display:none">
+<h2 id="resultText"></h2>
+<button onclick="backMenu()">Menú</button>
+</div>
+
+<div id="ui">
+Vuelta: <span id="lapUI">0</span>/3 |
+Pos: <span id="posUI">1</span>
+<div>Gasolina</div>
+<div class="bar"><div id="fuelBar" class="fill"></div></div>
+</div>
+
+<canvas id="c"></canvas>
+
+<div id="controls">
+<button class="ctrl" id="accel">⬆</button>
+<button class="ctrl" id="boost">⚡</button>
+</div>
+
+<script>
+const c=document.getElementById("c")
+const ctx=c.getContext("2d")
+c.width=innerWidth
+c.height=innerHeight
+
+let running=false
+let raceStarted=false
+let acc=false
+let boostRequest=false
+let boostCooldown=0
+
+const MAX_SPEED=0.012
+const MAX_AI_SPEED=0.010
+const MAX_FUEL=100
+const LAPS_TO_WIN=3
+
+let path=[]
+let player, aiCars, cars
+
+// ===== LOCAL STORAGE =====
+let money = parseInt(localStorage.getItem("money")) || 0
+let wins = parseInt(localStorage.getItem("wins")) || 0
+let losses = parseInt(localStorage.getItem("losses")) || 0
+
+let skins = JSON.parse(localStorage.getItem("skins")) || [
+{ id:"red", color:"red", price:0, owned:true },
+{ id:"blue", color:"cyan", price:200, owned:false },
+{ id:"green", color:"lime", price:400, owned:false },
+{ id:"purple", color:"violet", price:600, owned:false }
+]
+
+let currentSkin = localStorage.getItem("currentSkin") || "red"
+
+function saveGame(){
+localStorage.setItem("money",money)
+localStorage.setItem("wins",wins)
+localStorage.setItem("losses",losses)
+localStorage.setItem("skins",JSON.stringify(skins))
+localStorage.setItem("currentSkin",currentSkin)
+}
+
+// ===== SKINS =====
+function renderSkins(){
+skinList.innerHTML=""
+moneyUI.innerText=money
+winsUI.innerText=wins
+lossUI.innerText=losses
+
+skins.forEach(s=>{
+let btn=document.createElement("button")
+btn.style.background=s.color
+btn.style.color="black"
+
+if(s.owned){
+btn.innerText=s.id.toUpperCase()
+btn.onclick=()=>{
+currentSkin=s.id
+saveGame()
+}
+}else{
+btn.innerText="Comprar "+s.id+" ($"+s.price+")"
+btn.onclick=()=>{
+if(money>=s.price){
+money-=s.price
+s.owned=true
+saveGame()
+renderSkins()
+}
+}
+}
+
+skinList.appendChild(btn)
+})
+}
+renderSkins()
+
+// ===== TRACKS =====
+function createTrack(type){
+let w=c.width,h=c.height,m=100
+if(type=="zigzag")return[
+{x:m,y:m},{x:w-m,y:h*0.3},{x:m,y:h*0.5},
+{x:w-m,y:h*0.7},{x:m,y:h-m},{x:m,y:m}]
+if(type=="oval"){
+let arr=[]
+for(let i=0;i<=60;i++){
+let a=i/60*Math.PI*2
+arr.push({x:w/2+(w/2-150)*Math.cos(a),
+y:h/2+(h/3)*Math.sin(a)})
+}
+return arr}
+if(type=="wave")return[
+{x:m,y:h*0.3},{x:w-m,y:h*0.4},
+{x:m,y:h*0.5},{x:w-m,y:h*0.6},
+{x:m,y:h*0.7},{x:m,y:h*0.3}]
+if(type=="diamond")return[
+{x:w/2,y:m},{x:w-m,y:h/2},
+{x:w/2,y:h-m},{x:m,y:h/2},{x:w/2,y:m}]
+}
+
+// ===== CAR =====
+function createCar(offset,color,isPlayer=false){
+return{t:offset,speed:0,color:color,laps:0,fuel:MAX_FUEL,finished:false,player:isPlayer}
+}
+
+function initGame(){
+path=createTrack(trackSelect.value)
+let skinData=skins.find(s=>s.id===currentSkin)
+player=createCar(0,skinData.color,true)
+aiCars=[createCar(0.1,"yellow"),createCar(0.2,"white")]
+cars=[player,...aiCars]
+
+menu.style.display="none"
+result.style.display="none"
+c.style.display="block"
+controls.style.display="none"
+ui.style.display="none"
+
+startCountdown()
+}
+
+function startCountdown(){
+countdown.style.display="flex"
+let count=3
+countdown.innerText=count
+let interval=setInterval(()=>{
+count--
+if(count>0)countdown.innerText=count
+else if(count==0)countdown.innerText="YA!"
+else{
+clearInterval(interval)
+countdown.style.display="none"
+startRace()
+}
+},1000)
+}
+
+function startRace(){
+running=true
+raceStarted=true
+controls.style.display="flex"
+ui.style.display="block"
+}
+
+function backMenu(){
+running=false
+raceStarted=false
+menu.style.display="flex"
+c.style.display="none"
+controls.style.display="none"
+ui.style.display="none"
+result.style.display="none"
+renderSkins()
+}
+
+// ===== CONTROLS =====
+accel.onmousedown=()=>acc=true
+accel.onmouseup=()=>acc=false
+accel.ontouchstart=e=>{e.preventDefault();acc=true}
+accel.ontouchend=e=>{e.preventDefault();acc=false}
+boost.onclick=()=>boostRequest=true
+
+function getPos(t){
+let total=path.length-1
+let full=t*total
+let seg=Math.floor(full)
+if(seg>=total)seg=total-1
+let local=full-seg
+let p1=path[seg]
+let p2=path[seg+1]
+return{x:p1.x+(p2.x-p1.x)*local,y:p1.y+(p2.y-p1.y)*local}
+}
+
+function updateCar(car){
+if(car.finished||!raceStarted)return
+
+if(car.player){
+if(acc&&car.fuel>0){car.speed+=0.0003;car.fuel-=0.15}
+car.speed*=0.993
+if(boostRequest&&boostCooldown<=0&&car.fuel>15){
+car.speed+=0.003;car.fuel-=10;boostCooldown=120;boostRequest=false}
+if(boostCooldown>0)boostCooldown--
+if(car.speed>MAX_SPEED)car.speed=MAX_SPEED
+if(car.speed<0)car.speed=0
+if(car.fuel<0)car.fuel=0
+}else{
+let target=MAX_AI_SPEED*0.85
+let diff=(player.laps+player.t)-(car.laps+car.t)
+if(diff>0.15)target=MAX_AI_SPEED
+car.speed+=(target-car.speed)*0.03
+if(car.speed>MAX_AI_SPEED)car.speed=MAX_AI_SPEED
+if(car.speed<0.002)car.speed=0.002
+}
+
+car.t+=car.speed
+if(car.t>=1){
+car.t-=1
+car.laps++
+if(car.player)lapUI.innerText=car.laps
+if(car.laps>=LAPS_TO_WIN){
+car.finished=true
+endRace()
+}
+}
+}
+
+function endRace(){
+running=false
+raceStarted=false
+let sorted=[...cars].sort((a,b)=>(b.laps+b.t)-(a.laps+a.t))
+let pos=sorted.indexOf(player)+1
+
+if(pos==1){money+=300;wins++}
+else{money+=100;losses++}
+
+saveGame()
+
+resultText.innerText=pos==1?"🏆 GANASTE":"💀 PERDISTE"
+result.style.display="flex"
+controls.style.display="none"
+}
+
+function updateUI(){
+fuelBar.style.width=player.fuel+"%"
+let sorted=[...cars].sort((a,b)=>(b.laps+b.t)-(a.laps+a.t))
+posUI.innerText=sorted.indexOf(player)+1
+}
+
+function drawTrack(){
+ctx.strokeStyle="#555"
+ctx.lineWidth=50
+ctx.lineJoin="round"
+ctx.beginPath()
+ctx.moveTo(path[0].x,path[0].y)
+for(let i=1;i<path.length;i++)ctx.lineTo(path[i].x,path[i].y)
+ctx.stroke()
+}
+
+function drawCar(car){
+let p=getPos(car.t)
+ctx.save()
+ctx.translate(p.x,p.y)
+let next=getPos(car.t+0.01)
+let angle=Math.atan2(next.y-p.y,next.x-p.x)
+ctx.rotate(angle)
+ctx.fillStyle=car.color
+ctx.fillRect(-20,-10,40,20)
+ctx.fillStyle="black"
+ctx.fillRect(-15,-12,10,5)
+ctx.fillRect(5,-12,10,5)
+ctx.fillRect(-15,7,10,5)
+ctx.fillRect(5,7,10,5)
+ctx.restore()
+}
+
+function loop(){
+ctx.clearRect(0,0,c.width,c.height)
+if(path.length>0)drawTrack()
+if(running){cars.forEach(updateCar);updateUI()}
+cars&&cars.forEach(drawCar)
+requestAnimationFrame(loop)
+}
+loop()
+</script>
+</body>
+  </html>
